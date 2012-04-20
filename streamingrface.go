@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"time"
 )
 
 //var port *int = flag.Int("port", 23456, "Port to listen.")
@@ -20,14 +21,17 @@ var golem *string = flag.String("g", "http://glados1:8083/jobs/", "Golem master.
 var task *string = flag.String("t", "/titan/cancerregulome9/workspaces/golems/bin/run_rface_and_post.sh", "Absolute path to sh script describing task.")
 var password *string = flag.String("p", "password", "Password to golem master.")
 
-//TODO: I don't think maps are threadsafe so could break with lots of concurent inserts
+//Global registry to keep track of where to send incoming results
+//TODO: maps aren't threadsafe so could break with lots of concurent inserts and should be RW mutexed
 var WsRegistry = map[string]chan string{}
 
+//Task struct used for json serialization and submission to golem
 type Task struct {
 	Count int
 	Args  []string
 }
 
+//generate a unique random string
 func UniqueId() string {
 	subId := make([]byte, 16)
 	if _, err := rand.Read(subId); err != nil {
@@ -36,7 +40,8 @@ func UniqueId() string {
 	return fmt.Sprintf("%x", subId)
 }
 
-func PostTasks(tasklist []Task) {
+// posts a []Task to golem using the global configuration variables
+func GolemPostTasks(tasklist []Task) {
 	preader, pwriter := io.Pipe()
 
 	mpf := multipart.NewWriter(pwriter)
@@ -49,7 +54,8 @@ func PostTasks(tasklist []Task) {
 	r.Header.Add("content-type", "multipart/form-data; boundary="+mpf.Boundary())
 	r.Header.Add("x-golem-apikey", *password)
 	r.Header.Add("x-golem-job-label", "StreamingRface")
-	r.Header.Add("x-golem-job-owner", "ryanbressler@systemsbiology.org")
+	//TODO: this is just a nicety and we can either eliminate or make this configurable
+	r.Header.Add("x-golem-job-owner", "codefor@systemsbiology.org")
 
 	go func() {
 		fmt.Println("Creating form field.")
@@ -81,17 +87,22 @@ func PostTasks(tasklist []Task) {
 
 }
 
+//turn a []int list of  ids into a list of tasks to be run and post it using GolemPostTasks 
 func SubmitTasks(ids []int, returnadd string) {
+	//TODO: the bash script task can check to see if it has results for a job but maybe we should check here to see 
+	//if a job is allready in progress
 	n := len(ids)
 	tasklist := make([]Task, 0, n)
 	for i := 0; i < n; i++ {
-		tasklist = append(tasklist, Task{Count: 1, Args: []string{"bash", *task, strconv.Itoa(i), returnadd}})
+		tasklist = append(tasklist, Task{Count: 1, Args: []string{"bash", *task, strconv.Itoa(ids[i]), returnadd}})
 	}
 	fmt.Printf("tasklist %#v\n", tasklist)
 	fmt.Println("built task list.")
-	PostTasks(tasklist)
+	GolemPostTasks(tasklist)
 }
 
+//Handeler for websocket connectionf from client pages. Expects a []int list of feature id's as its first message 
+//and will submit these tasks and then wait to stream results back
 func SocketStreamer(ws *websocket.Conn) {
 	fmt.Printf("jsonServer %#v\n", ws.Config())
 	//for {
@@ -107,6 +118,7 @@ func SocketStreamer(ws *websocket.Conn) {
 		fmt.Println(err)
 		//break
 	}
+	//TODO:Consider allowing multiple tasks submissions on one channel instead of only waiting for one msg
 	fmt.Printf("recv:%#v\n", msg)
 
 	RestultChan := make(chan string, 0)
@@ -123,15 +135,10 @@ func SocketStreamer(ws *websocket.Conn) {
 		fmt.Printf("send:%#v\n", msg)
 	}
 
-	/*err = websocket.JSON.Send(ws, msg)
-	if err != nil {
-		fmt.Println(err)
-		break
-	}
-	fmt.Printf("send:%#v\n", msg)*/
-	//}
+	//TODO: remove ws from registry and cancel outstandign jobs when connetion dies
 }
 
+//excepts posts from tasks and dispatches them to appropriate Socket Streamer
 func ResultHandeler(w http.ResponseWriter, req *http.Request) {
 	//TODO: check to make sure it is a post with results in it
 	//and sanatize it so people can't push arbitray stuff to the client
@@ -139,11 +146,18 @@ func ResultHandeler(w http.ResponseWriter, req *http.Request) {
 	id := path.Base(req.URL.Path)
 	val, ok := WsRegistry[id]
 	if ok {
-		val <- req.FormValue("results")
+		select {
+		case val <- req.FormValue("results"):
+
+		case <-time.After(5 * time.Second):
+			fmt.Println("timed out streaming to task ", id)
+		}
 	}
 }
 
+//serve the html
 func MainServer(w http.ResponseWriter, req *http.Request) {
+	//TODO: stop hardcoding ws url and/or move this html somewhere else
 	io.WriteString(w, `<html>
 <head>
 <script type="text/javascript">
@@ -190,7 +204,7 @@ function send() {
 </script>
 <body onLoad="init();">
 <form name="msgform" action="#" onsubmit="return send();">
-A json array of ints coresponding to feature indexes:<input type="text" name="message" size="80" value="[1,2,3]">
+A json array of ints coresponding to feature indexes:<input type="text" name="message" size="80" value="[0,1,2,3,4,5,6,18162,0,30798,30797,4986,4987,4988,4989]">
 <input type="submit" value="send">
 </form>
 <div id="logdiv"></div>
@@ -198,6 +212,7 @@ A json array of ints coresponding to feature indexes:<input type="text" name="me
 `)
 }
 
+//main method, parse input, and setup webserver
 func main() {
 	flag.Parse()
 	http.Handle("/streamer", websocket.Handler(SocketStreamer))
