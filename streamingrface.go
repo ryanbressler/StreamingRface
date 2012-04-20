@@ -90,7 +90,7 @@ func GolemPostTasks(tasklist []Task) {
 //turn a []int list of  ids into a list of tasks to be run and post it using GolemPostTasks 
 func SubmitTasks(ids []int, returnadd string) {
 	//TODO: the bash script task can check to see if it has results for a job but maybe we should check here to see 
-	//if a job is allready in progress
+	//if a job is allready in progress and if the feature actually exsists.
 	n := len(ids)
 	tasklist := make([]Task, 0, n)
 	for i := 0; i < n; i++ {

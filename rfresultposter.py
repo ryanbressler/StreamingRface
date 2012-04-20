@@ -4,7 +4,10 @@ import urllib
 import urllib2
 
 
+
+
 def nodeFromLabel(label):
+	"""generate a hash that represens the json form of a node from a feature lanbe"""
 	node_obj={"label":label}
 	vs=label.split(":")
 	node_obj["chr"]=vs[3]
