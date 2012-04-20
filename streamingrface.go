@@ -1,17 +1,17 @@
 package main
 
 import (
+	"code.google.com/p/go.net/websocket"
+	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"path"
 	"io"
-	"os"
-	"net/http"
 	"mime/multipart"
-	"code.google.com/p/go.net/websocket"
+	"net/http"
+	"os"
+	"path"
 	"strconv"
-	"crypto/rand"
 )
 
 //var port *int = flag.Int("port", 23456, "Port to listen.")
@@ -23,40 +23,39 @@ var password *string = flag.String("p", "password", "Password to golem master.")
 //TODO: I don't think maps are threadsafe so could break with lots of concurent inserts
 var WsRegistry = map[string]chan string{}
 
-
-type Task struct{
+type Task struct {
 	Count int
-	Args []string
+	Args  []string
 }
 
 func UniqueId() string {
-        subId := make([]byte, 16)
-        if _, err := rand.Read(subId); err != nil {
-                fmt.Println(err)
-        }
-        return fmt.Sprintf("%x", subId)
+	subId := make([]byte, 16)
+	if _, err := rand.Read(subId); err != nil {
+		fmt.Println(err)
+	}
+	return fmt.Sprintf("%x", subId)
 }
 
-func PostTasks(tasklist []Task){
-	preader,pwriter := io.Pipe()
-	
+func PostTasks(tasklist []Task) {
+	preader, pwriter := io.Pipe()
+
 	mpf := multipart.NewWriter(pwriter)
 	fmt.Println("creating request")
 	r, err := http.NewRequest("POST", *golem, preader)
 	if err != nil {
-			fmt.Println(err)
-			
-	}
-	r.Header.Add("content-type", "multipart/form-data; boundary="+mpf.Boundary()) 
-	r.Header.Add("x-golem-apikey",*password)
-	r.Header.Add("x-golem-job-label", "StreamingRface")
-    r.Header.Add("x-golem-job-owner", "ryanbressler@systemsbiology.org")
+		fmt.Println(err)
 
-	go func(){
+	}
+	r.Header.Add("content-type", "multipart/form-data; boundary="+mpf.Boundary())
+	r.Header.Add("x-golem-apikey", *password)
+	r.Header.Add("x-golem-job-label", "StreamingRface")
+	r.Header.Add("x-golem-job-owner", "ryanbressler@systemsbiology.org")
+
+	go func() {
 		fmt.Println("Creating form field.")
-		mpfwriter,err := mpf.CreateFormFile("jsonfile","data.json")
+		mpfwriter, err := mpf.CreateFormFile("jsonfile", "data.json")
 		if err != nil {
-				fmt.Println(err)
+			fmt.Println(err)
 		}
 		fmt.Println("Creating json encoder.")
 		jsonencoder := json.NewEncoder(mpfwriter)
@@ -64,88 +63,83 @@ func PostTasks(tasklist []Task){
 		mpf.Close()
 		pwriter.Close()
 		//
-		
+
 		fmt.Println("Json encoded.")
 	}()
-	
 
 	fmt.Println("Doing Request.")
 	client := &http.Client{}
 	resp, err := client.Do(r)
 	if err != nil {
-			fmt.Println(err)
-			
+		fmt.Println(err)
+
 	}
 	fmt.Printf("job submision response %#v\n", resp)
-	io.Copy(os.Stdout,resp.Body)
+	io.Copy(os.Stdout, resp.Body)
 	//resp.Body.Close()
 	fmt.Println("Request Done.")
-	
-	 
+
 }
 
-func SubmitTasks(ids []int,returnadd string){
-	n := len(ids);
-	tasklist := make([]Task,0,n)
+func SubmitTasks(ids []int, returnadd string) {
+	n := len(ids)
+	tasklist := make([]Task, 0, n)
 	for i := 0; i < n; i++ {
-		tasklist = append(tasklist,Task{Count:1,Args:[]string{"bash",*task,strconv.Itoa(i),returnadd}})
+		tasklist = append(tasklist, Task{Count: 1, Args: []string{"bash", *task, strconv.Itoa(i), returnadd}})
 	}
 	fmt.Printf("tasklist %#v\n", tasklist)
 	fmt.Println("built task list.")
 	PostTasks(tasklist)
 }
 
-
-
-
-
 func SocketStreamer(ws *websocket.Conn) {
 	fmt.Printf("jsonServer %#v\n", ws.Config())
 	//for {
-		url:=*ws.Config().Location
-		id:= UniqueId()
-		url.Scheme = "http"
-		url.Path="/results/"+id
+	url := *ws.Config().Location
+	id := UniqueId()
+	url.Scheme = "http"
+	url.Path = "/results/" + id
 
-		var msg []int
-		
-		err := websocket.JSON.Receive(ws, &msg)
-		if err != nil {
-			fmt.Println(err)
-			//break
-		}
-		fmt.Printf("recv:%#v\n", msg)
-		
-		RestultChan:=make(chan string,0)
-		WsRegistry[id]=RestultChan
-		SubmitTasks(msg,url.String())
+	var msg []int
 
-		for {
-			msg:=<-RestultChan
-			err = websocket.Message.Send(ws, msg)
-			if err != nil {
-				fmt.Println(err)
-				break
-			}
-			fmt.Printf("send:%#v\n", msg)
-		}
+	err := websocket.JSON.Receive(ws, &msg)
+	if err != nil {
+		fmt.Println(err)
+		//break
+	}
+	fmt.Printf("recv:%#v\n", msg)
 
-		/*err = websocket.JSON.Send(ws, msg)
+	RestultChan := make(chan string, 0)
+	WsRegistry[id] = RestultChan
+	SubmitTasks(msg, url.String())
+
+	for {
+		msg := <-RestultChan
+		err = websocket.Message.Send(ws, msg)
 		if err != nil {
 			fmt.Println(err)
 			break
 		}
-		fmt.Printf("send:%#v\n", msg)*/
+		fmt.Printf("send:%#v\n", msg)
+	}
+
+	/*err = websocket.JSON.Send(ws, msg)
+	if err != nil {
+		fmt.Println(err)
+		break
+	}
+	fmt.Printf("send:%#v\n", msg)*/
 	//}
 }
 
 func ResultHandeler(w http.ResponseWriter, req *http.Request) {
 	//TODO: check to make sure it is a post with results in it
-	fmt.Println("result request ",req.URL.Path)
+	//and sanatize it so people can't push arbitray stuff to the client
+	fmt.Println("result request ", req.URL.Path)
 	id := path.Base(req.URL.Path)
-	val,ok := WsRegistry[id]
+	val, ok := WsRegistry[id]
 	if ok {
-		val<-req.FormValue("results")
+		val <- req.FormValue("results")
 	}
 }
 
